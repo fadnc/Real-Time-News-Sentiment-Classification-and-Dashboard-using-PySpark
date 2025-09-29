@@ -4,3 +4,4 @@ textblob
 requests
 pandas
 matplotlib
+plotly
