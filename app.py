@@ -67,12 +67,23 @@ def classify_sentiment(score):
 def run_sentiment_analysis(spark):
     sentiment_udf = udf(get_sentiment, FloatType())
     label_udf = udf(classify_sentiment, StringType())
+
     df = spark.read.json(CLEANED_JSON_PATH)
+
     df_with_polarity = df.withColumn("polarity", sentiment_udf(df.text))
     scored_df = df_with_polarity.withColumn("sentiment", label_udf(col("polarity"))) \
                                 .drop("description")
-    scored_df.write.mode("overwrite").json(SENTIMENT_JSON_PATH)
+
+    # Ensure output directory exists and write single JSON file
+    output_path = SENTIMENT_JSON_PATH
+    if os.path.exists(output_path):
+        import shutil
+        shutil.rmtree(output_path)  # remove old folder
+
+    scored_df.coalesce(1).write.mode("overwrite").json(output_path)
+
     return scored_df
+
 
 # --------------------------
 # STEP 4: Load Data for Dashboard
@@ -81,7 +92,7 @@ def run_sentiment_analysis(spark):
 def load_sentiment_data(json_dir):
     if not os.path.exists(json_dir):
         return pd.DataFrame(columns=["text", "polarity", "sentiment", "title"])
-    files = glob.glob(os.path.join(json_dir, "*.json"))
+    files = glob.glob(os.path.join(json_dir, "part-*.json"))  # only Spark output files
     if not files:
         return pd.DataFrame(columns=["text", "polarity", "sentiment", "title"])
     frames = [pd.read_json(f, lines=True) for f in files]
@@ -89,6 +100,7 @@ def load_sentiment_data(json_dir):
     if "title" not in df.columns and "text" in df.columns:
         df["title"] = df["text"].str.slice(0, 100)
     return df
+
 
 # --------------------------
 # Spark session (global)
