@@ -5,7 +5,7 @@ import glob
 import os
 import time
 from datetime import datetime
-import plotly.express as px
+#import plotly.express as px
 
 # Path must match what your Spark job writes (directory of JSON files)
 SENTIMENT_JSON_DIR = "sentiment_output"  # same as your SENTIMENT_JSON_PATH
@@ -138,4 +138,5 @@ with placeholder.container():
     st.write(f"Next refresh in ~{REFRESH_SECONDS} seconds...")
     time.sleep(REFRESH_SECONDS)
     load_sentiment_data.clear()
+
     st.rerun()
