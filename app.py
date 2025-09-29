@@ -10,7 +10,7 @@ from pyspark.sql.types import FloatType, StringType
 # --------------------------
 # CONFIG
 # --------------------------
-GNEWS_API_KEY = "YOUR_API_KEY"
+GNEWS_API_KEY = "380af545145de6a25107d08ac9c4ac9c"
 QUERY = "stock market"
 RAW_JSON_PATH = "news_data.json"
 CLEANED_JSON_PATH = "cleaned_news_output"
