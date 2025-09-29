@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import requests, json, os, glob, time
+import requests, json, os, glob
 from datetime import datetime
 from textblob import TextBlob
 from pyspark.sql import SparkSession
@@ -8,13 +8,13 @@ from pyspark.sql.functions import col, lower, regexp_replace, udf
 from pyspark.sql.types import FloatType, StringType
 
 # --------------------------
-# CONFIG
+# CONFIG (safe paths for Streamlit Cloud)
 # --------------------------
 GNEWS_API_KEY = "380af545145de6a25107d08ac9c4ac9c"
 QUERY = "stock market"
-RAW_JSON_PATH = "news_data.json"
-CLEANED_JSON_PATH = "cleaned_news_output"
-SENTIMENT_JSON_PATH = "sentiment_output"
+RAW_JSON_PATH = "/tmp/news_data.json"
+CLEANED_JSON_PATH = "/tmp/cleaned_news_output"
+SENTIMENT_JSON_PATH = "/tmp/sentiment_output"
 
 # Streamlit page setup
 st.set_page_config(page_title="Real-time News Sentiment Dashboard", layout="wide")
@@ -150,4 +150,3 @@ if len(df) > 0:
     st.dataframe(df.head(200), use_container_width=True)
 else:
     st.write("No data yet.")
-
