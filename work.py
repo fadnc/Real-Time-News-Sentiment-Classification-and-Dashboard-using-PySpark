@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+import sys
 import time
 from datetime import datetime
 from textblob import TextBlob
@@ -10,13 +11,66 @@ from pyspark.sql.types import FloatType, StringType, StructType, StructField
 import matplotlib.pyplot as plt
 
 # --------------------------
+# WINDOWS FIX
+# --------------------------
+def setup_windows_hadoop():
+    """
+    Fix for Windows Hadoop native library issue
+    Downloads and configures winutils.exe
+    """
+    import platform
+    
+    if platform.system() != "Windows":
+        return
+    
+    print("🔧 Detecting Windows OS - Applying Hadoop compatibility fix...")
+    
+    # Create hadoop bin directory
+    hadoop_home = os.path.join(os.getcwd(), "hadoop")
+    bin_dir = os.path.join(hadoop_home, "bin")
+    os.makedirs(bin_dir, exist_ok=True)
+    
+    # Set environment variable
+    os.environ["HADOOP_HOME"] = hadoop_home
+    os.environ["PATH"] = f"{bin_dir};{os.environ.get('PATH', '')}"
+    
+    winutils_path = os.path.join(bin_dir, "winutils.exe")
+    
+    # Check if winutils.exe already exists
+    if os.path.exists(winutils_path):
+        print(f"✅ Found existing winutils.exe at {winutils_path}")
+        return
+    
+    print(f"📥 Downloading winutils.exe to {winutils_path}...")
+    
+    try:
+        # Download winutils.exe for Hadoop 3.x
+        url = "https://github.com/cdarlint/winutils/raw/master/hadoop-3.3.1/bin/winutils.exe"
+        response = requests.get(url, timeout=30)
+        
+        if response.status_code == 200:
+            with open(winutils_path, "wb") as f:
+                f.write(response.content)
+            print("✅ Successfully downloaded winutils.exe")
+        else:
+            print(f"⚠️ Could not download winutils.exe (status: {response.status_code})")
+            print("   Continuing anyway - some features may not work")
+    except Exception as e:
+        print(f"⚠️ Error downloading winutils.exe: {e}")
+        print("   Continuing anyway - some features may not work")
+
+# Apply Windows fix before importing Spark
+setup_windows_hadoop()
+
+# --------------------------
 # CONFIG
 # --------------------------
 GNEWS_API_KEY = '380af545145de6a25107d08ac9c4ac9c'
 QUERY = 'stock market'
 RAW_JSON_PATH = "news_data.json"
-CLEANED_JSON_PATH = "cleaned_news_output"
-SENTIMENT_JSON_PATH = "sentiment_output"
+CLEANED_CSV_PATH = "cleaned_news.csv"  # Changed to CSV for Windows compatibility
+SENTIMENT_CSV_PATH = "sentiment_output.csv"  # Changed to CSV
+SENTIMENT_JSON_PATH = "sentiment_output"  # Keep for dashboard
 FETCH_INTERVAL = 300  # Fetch news every 5 minutes
 
 # --------------------------
@@ -88,8 +142,9 @@ def preprocess_articles(spark):
         # Filter out null or empty descriptions
         cleaned_df = cleaned_df.filter(col("text").isNotNull() & (col("text") != ""))
         
-        cleaned_df.write.mode("overwrite").json(CLEANED_JSON_PATH)
-        print(f"✅ Saved cleaned data to {CLEANED_JSON_PATH}")
+        # Write to CSV instead of JSON (better Windows compatibility)
+        cleaned_df.coalesce(1).write.mode("overwrite").option("header", "true").csv(CLEANED_CSV_PATH)
+        print(f"✅ Saved cleaned data to {CLEANED_CSV_PATH}")
         return cleaned_df
     except Exception as e:
         print(f"❌ Error during preprocessing: {e}")
@@ -124,15 +179,53 @@ def run_sentiment_analysis(spark):
     """
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Running Sentiment Analysis...")
     
-    if not os.path.exists(CLEANED_JSON_PATH):
-        print("⚠️ No cleaned data found. Run preprocess_articles() first.")
-        return None
-    
+    # Try to read from CSV first, fallback to original JSON if CSV doesn't exist
     try:
+        if os.path.exists(CLEANED_CSV_PATH):
+            # Find the actual CSV file (Spark creates a directory)
+            csv_files = []
+            if os.path.isdir(CLEANED_CSV_PATH):
+                for file in os.listdir(CLEANED_CSV_PATH):
+                    if file.endswith('.csv') and not file.startswith('.'):
+                        csv_files.append(os.path.join(CLEANED_CSV_PATH, file))
+            
+            if csv_files:
+                df = spark.read.option("header", "true").csv(CLEANED_CSV_PATH)
+            else:
+                # Fallback to reading from original JSON
+                df = spark.read.json(RAW_JSON_PATH)
+                df = df.select(
+                    "title", 
+                    "description",
+                    "url",
+                    "publishedAt",
+                    "fetched_at"
+                ).withColumn(
+                    "text", 
+                    lower(regexp_replace(col("description"), "[^a-zA-Z\\s]", ""))
+                ).withColumn(
+                    "title_clean",
+                    lower(regexp_replace(col("title"), "[^a-zA-Z\\s]", ""))
+                )
+        else:
+            print("⚠️ No cleaned data found. Reading from raw JSON...")
+            df = spark.read.json(RAW_JSON_PATH)
+            df = df.select(
+                "title", 
+                "description",
+                "url",
+                "publishedAt",
+                "fetched_at"
+            ).withColumn(
+                "text", 
+                lower(regexp_replace(col("description"), "[^a-zA-Z\\s]", ""))
+            ).withColumn(
+                "title_clean",
+                lower(regexp_replace(col("title"), "[^a-zA-Z\\s]", ""))
+            )
+        
         sentiment_udf = udf(get_sentiment, FloatType())
         label_udf = udf(classify_sentiment, StringType())
-        
-        df = spark.read.json(CLEANED_JSON_PATH)
         
         # Calculate sentiment on combined text (title + description)
         df_with_polarity = df.withColumn(
@@ -157,25 +250,28 @@ def run_sentiment_analysis(spark):
             "fetched_at"
         )
         
-        # Write to output directory
-        scored_df.coalesce(1).write.mode("overwrite").json(SENTIMENT_JSON_PATH)
-        
-        # Also write a single consolidated JSON file for easier dashboard reading
+        # Convert to Pandas and save (more reliable on Windows)
+        print("📊 Converting results to Pandas DataFrame...")
         pandas_df = scored_df.toPandas()
-        pandas_df.to_json(
-            os.path.join(SENTIMENT_JSON_PATH, "consolidated.json"),
-            orient="records",
-            lines=True,
-            force_ascii=False
-        )
         
-        print(f"✅ Saved sentiment results to '{SENTIMENT_JSON_PATH}'")
+        # Save as CSV
+        pandas_df.to_csv(SENTIMENT_CSV_PATH, index=False)
+        print(f"✅ Saved sentiment results to '{SENTIMENT_CSV_PATH}'")
+        
+        # Also save as JSON for dashboard (create directory if needed)
+        os.makedirs(SENTIMENT_JSON_PATH, exist_ok=True)
+        json_file = os.path.join(SENTIMENT_JSON_PATH, "consolidated.json")
+        pandas_df.to_json(json_file, orient="records", lines=True, force_ascii=False)
+        print(f"✅ Saved JSON results to '{json_file}'")
+        
         print(f"\n📊 Sample Results:")
-        scored_df.select("title", "polarity", "sentiment").show(10, truncate=60)
+        print(pandas_df[["title", "polarity", "sentiment"]].head(10).to_string())
         
         return scored_df
     except Exception as e:
         print(f"❌ Error during sentiment analysis: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 # --------------------------
@@ -190,13 +286,18 @@ def print_sentiment_summary(scored_df):
     print(f"\n📊 Sentiment Summary [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]:")
     print("=" * 50)
     
-    counts = scored_df.groupBy("sentiment").count().collect()
-    total = sum(row['count'] for row in counts)
-    
-    for row in counts:
-        percentage = (row['count'] / total * 100) if total > 0 else 0
-        print(f"{row['sentiment']:>10}: {row['count']:>4} articles ({percentage:>5.1f}%)")
-    print("=" * 50)
+    try:
+        # Use Pandas for easier summary on Windows
+        pandas_df = scored_df.toPandas()
+        sentiment_counts = pandas_df['sentiment'].value_counts()
+        total = len(pandas_df)
+        
+        for sentiment, count in sentiment_counts.items():
+            percentage = (count / total * 100) if total > 0 else 0
+            print(f"{sentiment:>10}: {count:>4} articles ({percentage:>5.1f}%)")
+        print("=" * 50)
+    except Exception as e:
+        print(f"❌ Error generating summary: {e}")
 
 # --------------------------
 # STEP 5: Visualization
@@ -210,8 +311,9 @@ def plot_sentiment_pie(scored_df):
     print(f"\n📈 [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Generating Pie Chart Visualization...")
     
     try:
-        counts = scored_df.groupBy("sentiment").count().collect()
-        sentiment_counts = {row["sentiment"]: row["count"] for row in counts}
+        # Use Pandas for plotting
+        pandas_df = scored_df.toPandas()
+        sentiment_counts = pandas_df['sentiment'].value_counts()
         
         labels = []
         sizes = []
@@ -284,12 +386,13 @@ def run_continuous_pipeline(spark, iterations=None):
 # MAIN
 # --------------------------
 if __name__ == "__main__":
-    import sys
-    
+    # Create Spark session with Windows-friendly configuration
     spark = SparkSession.builder \
         .appName("RealTimeNewsSentimentPipeline") \
         .master("local[*]") \
         .config("spark.driver.memory", "2g") \
+        .config("spark.sql.warehouse.dir", "file:///" + os.path.abspath("spark-warehouse").replace("\\", "/")) \
+        .config("spark.driver.host", "127.0.0.1") \
         .getOrCreate()
     
     spark.sparkContext.setLogLevel("ERROR")
@@ -315,6 +418,8 @@ if __name__ == "__main__":
         print("\n\n⚠️ Pipeline interrupted by user.")
     except Exception as e:
         print(f"\n❌ Pipeline error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         spark.stop()
         print("\n✅ Spark session closed.")
